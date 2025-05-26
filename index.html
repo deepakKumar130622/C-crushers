@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>MiniC++ IDE</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><i class="fas fa-code"></i> MiniC++ IDE</h1>
+            <div class="header-actions">
+                <button id="newFileBtn"><i class="fas fa-file"></i> New</button>
+                <button id="saveFileBtn"><i class="fas fa-save"></i> Save</button>
+            </div>
+        </header>
+
+        <div class="ide-container">
+            <div class="sidebar">
+                <div class="file-explorer">
+                    <h3><i class="fas fa-folder-open"></i> Files</h3>
+                    <ul id="fileList"></ul>
+                </div>
+                <div class="includes">
+                    <h3><i class="fas fa-book"></i> Standard Libraries</h3>
+                    <ul>
+                        <li onclick="insertAtCursor('#include <iostream>')"><i class="fas fa-file-code"></i> iostream</li>
+                        <li onclick="insertAtCursor('#include <vector>')"><i class="fas fa-file-code"></i> vector</li>
+                        <li onclick="insertAtCursor('#include <algorithm>')"><i class="fas fa-file-code"></i> algorithm</li>
+                        <li onclick="insertAtCursor('#include <string>')"><i class="fas fa-file-code"></i> string</li>
+                        <li onclick="insertAtCursor('#include <map>')"><i class="fas fa-file-code"></i> map</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="main-content">
+                <div class="editor-section">
+                    <div class="editor-header">
+                        <span id="currentFilename">Untitled.cpp</span>
+                        <div class="editor-actions">
+                            <button id="runBtn" onclick="compileAndRun()"><i class="fas fa-play"></i> Run</button>
+                        </div>
+                    </div>
+                    <textarea id="code" placeholder="Write your C++-like code here..."></textarea>
+                </div>
+
+                <div class="io-section">
+                    <div class="input-section">
+                        <label for="userInput"><i class="fas fa-keyboard"></i> Input (space-separated):</label>
+                        <input type="text" id="userInput" placeholder="e.g., 10 20" />
+                    </div>
+                    <div class="output-section">
+                        <label><i class="fas fa-terminal"></i> Output:</label>
+                        <pre id="output"></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="./compiler.js"></script>
+    <script>
+        // File management system
+        let files = {};
+        let currentFile = 'Untitled.cpp';
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            // Initialize with a default file
+            files[currentFile] = '';
+            updateFileList();
+            
+            // Set up event listeners
+            document.getElementById('newFileBtn').addEventListener('click', newFile);
+            document.getElementById('saveFileBtn').addEventListener('click', saveFile);
+            document.getElementById('code').addEventListener('input', () => {
+                files[currentFile] = document.getElementById('code').value;
+            });
+        });
+        
+        function newFile() {
+            const fileName = prompt('Enter file name (e.g., program.cpp):', 'program.cpp');
+            if (fileName && !files[fileName]) {
+                currentFile = fileName;
+                files[fileName] = '';
+                document.getElementById('currentFilename').textContent = fileName;
+                document.getElementById('code').value = '';
+                updateFileList();
+            } else if (fileName) {
+                alert('File already exists!');
+            }
+        }
+        
+        function saveFile() {
+            if (currentFile) {
+                localStorage.setItem('miniCppFiles', JSON.stringify(files));
+                alert(`File "${currentFile}" saved!`);
+            }
+        }
+        
+        function loadFile(fileName) {
+            currentFile = fileName;
+            document.getElementById('currentFilename').textContent = fileName;
+            document.getElementById('code').value = files[fileName] || '';
+        }
+        
+        function updateFileList() {
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = '';
+            
+            for (const fileName in files) {
+                const li = document.createElement('li');
+                li.textContent = fileName;
+                li.className = fileName === currentFile ? 'active' : '';
+                li.onclick = () => loadFile(fileName);
+                fileList.appendChild(li);
+            }
+            
+            // Load from localStorage if available
+            const savedFiles = localStorage.getItem('miniCppFiles');
+            if (savedFiles) {
+                files = JSON.parse(savedFiles);
+            }
+        }
+        
+        function insertAtCursor(text) {
+            const editor = document.getElementById('code');
+            const startPos = editor.selectionStart;
+            const endPos = editor.selectionEnd;
+            const currentText = editor.value;
+            
+            editor.value = currentText.substring(0, startPos) + text + currentText.substring(endPos);
+            editor.focus();
+            editor.selectionStart = editor.selectionEnd = startPos + text.length;
+        }
+    
+    </script>
+</body>
+</html>
