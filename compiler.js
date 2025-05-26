@@ -1,25 +1,26 @@
 // --- Enhanced Tokenizer ---
 function tokenize(input) {
     const tokenSpecs = [
-        [/^\/\/.*/, null],                     // Single-line comments
-        [/^\/\*[\s\S]*?\*\//, null],          // Multi-line comments
-        [/^#include\s*<[^>]+>/, 'INCLUDE'],   // Include directives
-        [/^#include\s*"[^"]+"/, 'INCLUDE'],   // Local includes
-        [/^\b(int|float|double|char|void|bool|if|else|while|for|do|return|break|continue|cout|cin|endl|class|struct|public|private|protected|new|delete|true|false|auto|const|static|namespace|using|template|typename|vector|map|string|pair)\b/, 'KEYWORD'],
-        [/^[a-zA-Z_]\w*/, 'IDENTIFIER'],
-        [/^\d+\.?\d*([eE][+-]?\d+)?/, 'NUMBER'],
-        [/^'([^'\\]|\\.)'/, 'CHAR'],
-        [/^"([^"\\]|\\.)*"/, 'STRING'],
-        [/^<<|^>>/, 'STREAM'],
-        [/^\+\+|^--/, 'OPERATOR'],
-        [/^==|^!=|^<=|^>=|^&&|^\|\||^->|^\./, 'OPERATOR'],
-        [/^[+\-*/=!%&|~^]/, 'OPERATOR'],  
-        [/^</, 'DELIMITER'],
-        [/^>/, 'DELIMITER'],
-        [/^::/, 'SCOPE'],
-        [/^[\[\](){};,:]/, 'DELIMITER'],
-        [/^\s+/, null]
-    ];
+    [/^\/\/.*/, null],                     // Single-line comments
+    [/^\/\*[\s\S]*?\*\//, null],           // Multi-line comments
+    [/^#include\s*<[^>]+>/, 'INCLUDE'],    // Include directives
+    [/^#include\s*"[^"]+"/, 'INCLUDE'],    // Local includes
+    [/^\b(int|float|double|char|void|bool|if|else|while|for|do|return|break|continue|cout|cin|endl|class|struct|public|private|protected|new|delete|true|false|auto|const|static|namespace|using|template|typename|vector|map|string|pair)\b/, 'KEYWORD'],
+    [/^[a-zA-Z_]\w*/, 'IDENTIFIER'],
+    [/^\d+\.?\d*([eE][+-]?\d+)?/, 'NUMBER'],
+    [/^'([^'\\]|\\.)'/, 'CHAR'],
+    [/^"([^"\\]|\\.)*"/, 'STRING'],
+    [/^<<|^>>/, 'STREAM'],
+    [/^\+\+|^--/, 'OPERATOR'],
+    [/^==|^!=|^<=|^>=|^&&|^\|\||^->|^\./, 'OPERATOR'],
+    [/^::/, 'SCOPE'],
+    [/^</, 'DELIMITER'],                  // Correct order: comes before generic OPERATOR
+    [/^>/, 'DELIMITER'],
+    [/^[+\-*/=!%&|~^]/, 'OPERATOR'],      // Comes after
+    [/^[\[\](){};,:]/, 'DELIMITER'],
+    [/^\s+/, null]
+];
+
 
     let tokens = [];
     let position = 0;
@@ -76,6 +77,7 @@ function parseTokens(tokens) {
     }
 
     const PRECEDENCE = {
+        '=':0,
         '||': 1,
         '&&': 2,
         '|': 3,
@@ -105,32 +107,14 @@ function parseTokens(tokens) {
 }
 
 
-    function parseExpression(minPrecedence = 1) {
-        let left = parsePrimary();
-
-        while (
-            current() &&
-            (current().type === 'OPERATOR' || current().type === 'SCOPE') &&
-            PRECEDENCE[current().value] >= minPrecedence
-        ) {
-            const op = current().value;
-            const precedence = PRECEDENCE[op];
-            next();
-            let right = parseExpression(precedence + 1);
-            left = `(${left} ${op} ${right})`;
-        }
-
-        return left;
-    }
-
+function parseExpression(minPrecedence = 1) {
     function parsePrimary() {
         const token = current();
         if (!token) throw new Error("Unexpected end of input in expression");
 
-        // Handle prefix operators
-        if (token.type === "OPERATOR" && (token.value === "++" || token.value === "--" || 
-                                         token.value === "+" || token.value === "-" || 
-                                         token.value === "!" || token.value === "~")) {
+        // Handle prefix unary operators
+        if (token.type === "OPERATOR" && (token.value === "++" || token.value === "--" ||
+            token.value === "+" || token.value === "-" || token.value === "!" || token.value === "~")) {
             const op = token.value;
             next();
             const operand = parsePrimary();
@@ -139,46 +123,44 @@ function parseTokens(tokens) {
 
         if (token.type === 'NUMBER' || token.type === 'IDENTIFIER' || 
             token.type === 'STRING' || token.type === 'CHAR' ||
-            (token.type === 'KEYWORD' && (token.value === 'true' || token.value === 'false'))) {
-            const value = token.value;
+            (token.type === 'KEYWORD' && (token.value === 'true' || token.value === 'false' || token.value === 'endl'))) {
+            let result = token.value;
             next();
 
-            // Handle postfix ++ / --
+            // Postfix: ++ or --
             if (current() && current().type === "OPERATOR" && (current().value === "++" || current().value === "--")) {
                 const op = current().value;
                 next();
-                return `(${value}${op})`;
+                return `(${result}${op})`;
             }
 
-            // Handle function calls
-            if (current() && current().value === '(') {
-                next();
-                const args = [];
-                while (current() && current().value !== ')') {
-                    args.push(parseExpression());
-                    if (current().value === ',') next();
+            // Loop to handle chaining
+            while (current()) {
+                if (current().value === '(') {
+                    next();
+                    const args = [];
+                    while (current() && current().value !== ')') {
+                        args.push(parseExpression());
+                        if (current().value === ',') next();
+                    }
+                    expect("DELIMITER", ")");
+                    result = `${result}(${args.join(', ')})`;
+                } else if (current().value === '.' || current().value === '->') {
+                    const op = current().value;
+                    next();
+                    const member = expect("IDENTIFIER").value;
+                    result = `${result}${op}${member}`;
+                } else if (current().value === '[') {
+                    next();
+                    const index = parseExpression();
+                    expect("DELIMITER", "]");
+                    result = `${result}[${index}]`;
+                } else {
+                    break;
                 }
-                expect("DELIMITER", ")");
-                return `${value}(${args.join(', ')})`;
             }
 
-            // Handle member access
-            if (current() && (current().value === '.' || current().value === '->')) {
-                const op = current().value;
-                next();
-                const member = expect("IDENTIFIER").value;
-                return `(${value}${op}${member})`;
-            }
-
-            // Handle vector/map access
-            if (current() && current().value === '[') {
-                next();
-                const index = parseExpression();
-                expect("DELIMITER", "]");
-                return `${value}[${index}]`;
-            }
-
-            return value;
+            return result;
         }
 
         if (token.value === '(') {
@@ -210,6 +192,25 @@ function parseTokens(tokens) {
 
         throw new Error(`Unexpected token in expression: ${token.value}`);
     }
+
+    let left = parsePrimary();
+
+    while (
+        current() &&
+        (current().type === 'OPERATOR' || current().type === 'SCOPE') &&
+        PRECEDENCE[current().value] >= minPrecedence
+    ) {
+        const op = current().value;
+        const precedence = PRECEDENCE[op];
+        next();
+        const right = parseExpression(op === '=' ? precedence : precedence + 1);
+        left = `(${left} ${op} ${right})`;
+    }
+
+    return left;
+}
+
+
 
     function parseType() {
         let type = '';
@@ -657,13 +658,19 @@ function generateJS(ast, inputBuffer = [], isTopLevel = true) {
                 break;
                 
             case "print":
-    if (node.parts.length === 0) {
-        code += `__outputs.push("");\n`;
-    } else {
-        // Join parts using + but wrap each part with String()
-        code += `__outputs.push(${node.parts.map(p => `String(${p})`).join(' + ')});\n`;
-    }
-    break;
+                    if (node.parts.length === 0) {
+                        code += `__outputs.push("");\n`;
+                    } else {
+                        // Replace 'endl' with newline string, wrap others with String()
+                        const parts = node.parts.map(p => {
+                            if (p === "endl") return `"\\n"`;         // C++-style endl
+                            if (p === '\n') return `"\\n"`;            // internal mapping
+                            return `String(${p})`;
+                        });
+                        code += `__outputs.push(${parts.join(' + ')});\n`;
+                    }
+                    break;
+
 
             case "if":
                 code += `if (${node.condition}) {\n`;
