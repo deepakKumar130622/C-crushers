@@ -13,10 +13,11 @@ function tokenize(input) {
         [/^<<|^>>/, 'STREAM'],
         [/^\+\+|^--/, 'OPERATOR'],
         [/^==|^!=|^<=|^>=|^&&|^\|\||^->|^\./, 'OPERATOR'],
-        [/^[+\-*/=<>!%&|~^]/, 'OPERATOR'],
+        [/^[+\-*/=!%&|~^]/, 'OPERATOR'],  
+        [/^</, 'DELIMITER'],
+        [/^>/, 'DELIMITER'],
         [/^::/, 'SCOPE'],
         [/^[\[\](){};,:]/, 'DELIMITER'],
-        [/^\b(int|float|double|char|void|bool|if|else|while|for|do|return|break|continue|cout|cin|endl|class|struct|public|private|protected|new|delete|true|false|auto|const|static|namespace|using)\b/, 'KEYWORD'],
         [/^\s+/, null]
     ];
 
@@ -87,6 +88,22 @@ function parseTokens(tokens) {
         '*': 10, '/': 10, '%': 10,
         '.': 11, '->': 11, '::': 11
     };
+    function evaluateLiteralExpression(expr) {
+    // Only allow digits, decimal points, parentheses, + - * / operators, and spaces
+    if (!/^[0-9+\-*/().\s]+$/.test(expr)) {
+        throw new Error(`Cannot evaluate non-literal expression: ${expr}`);
+    }
+
+    // Use Function constructor to safely evaluate the arithmetic expression
+    // This will throw if invalid syntax
+    try {
+        // Disallow double dots, consecutive operators, etc. could be added here for safety
+        return Function(`"use strict"; return (${expr});`)();
+    } catch {
+        throw new Error(`Invalid expression for evaluation: ${expr}`);
+    }
+}
+
 
     function parseExpression(minPrecedence = 1) {
         let left = parsePrimary();
@@ -203,20 +220,39 @@ function parseTokens(tokens) {
         }
         
         // Template types
-        if (current().value === 'template') {
-            next();
-            expect("DELIMITER", "<");
-            const templateParam = parseType();
-            expect("DELIMITER", ">");
-            type += `template<${templateParam}> `;
-        }
+       // Parse templated types like vector<int>, map<string, int>
+            if (current().value === 'vector' || current().value === 'map' || current().value === 'pair') {
+                let baseType = expect("KEYWORD").value;
+                if (current() && current().value === "<") {
+                    next(); // consume '<'
+                    let templateArgs = [];
+                    while (current() && current().value !== ">") {
+                        templateArgs.push(parseType());
+                        if (current().value === ",") next();
+                    }
+                    expect("DELIMITER", ">");
+                    type += `${baseType}<${templateArgs.join(", ")}>`;
+                } else {
+                    type += baseType;
+                }
+                return type;
+            }
+
         
         // Base type
         if (current().type === 'KEYWORD') {
             type += expect("KEYWORD").value;
-        } else {
-            type += expect("IDENTIFIER").value;
-        }
+            } else {
+                const id = expect("IDENTIFIER").value;
+                if (id === "std" && current() && current().value === "::") {
+                    next(); // skip '::'
+                    const sub = expect("IDENTIFIER").value;
+                    type += `std::${sub}`;
+                } else {
+                    type += id;
+                }
+                }
+
         
         // Pointer/reference
         while (current().value === '*' || current().value === '&') {
@@ -244,37 +280,101 @@ function parseTokens(tokens) {
         expect("DELIMITER", ")");
         return params;
     }
+function evaluateLiteral(expr) {
+    expr = expr.trim();
 
-    function parseDeclaration() {
-        const type = parseType();
-        const name = expect("IDENTIFIER").value;
-        
-        // Function declaration
-        if (current().value === '(') {
-            const params = parseParameterList();
-            
-            // Function definition
-            if (current().value === '{') {
-                const body = parseBlock();
-                return { type: "function", returnType: type, name, params, body };
-            }
-            // Function declaration only
-            else {
-                expect("DELIMITER", ";");
-                return { type: "functionDecl", returnType: type, name, params };
-            }
-        }
-        // Variable declaration
-        else {
-            let value = null;
-            if (current().value === '=') {
-                next();
-                value = parseExpression();
-            }
-            expect("DELIMITER", ";");
-            return { type: "declaration", varType: type, name, value };
+    // String literal
+    if (/^".*"$/.test(expr)) {
+        return { type: "string", value: expr.slice(1, -1) };
+    }
+
+    // Number literal
+    if (!isNaN(expr)) {
+        const num = Number(expr);
+        if (Number.isInteger(num)) {
+            return { type: "int", value: num };
+        } else {
+            return { type: "float", value: num };
         }
     }
+
+    // Arithmetic expression evaluation (safe)
+    if (/^[0-9+\-*/().\s]+$/.test(expr)) {
+        try {
+            const val = Function(`"use strict";return (${expr});`)();
+            if (typeof val === "number") {
+                if (Number.isInteger(val)) return { type: "int", value: val };
+                else return { type: "float", value: val };
+            }
+        } catch {
+            // evaluation failed
+        }
+    }
+
+    return null; // Could not evaluate as literal
+}
+
+    function validateDeclaration(varType, value) {
+    if (value === null) return; // no initializer
+
+    const evalResult = evaluateLiteral(value);
+
+    if (evalResult) {
+        // Type compatibility checks
+        if (varType === "int" && evalResult.type !== "int") {
+            throw new Error(`Type error: Cannot assign ${evalResult.type} value '${evalResult.value}' to int`);
+        }
+        if ((varType === "float" || varType === "double") &&
+            !(evalResult.type === "int" || evalResult.type === "float")) {
+            throw new Error(`Type error: Cannot assign ${evalResult.type} value '${evalResult.value}' to ${varType}`);
+        }
+        if ((varType === "string" || varType === "std::string") && evalResult.type !== "string") {
+            throw new Error(`Type error: Cannot assign ${evalResult.type} value '${evalResult.value}' to string`);
+        }
+    } else {
+        // If evaluation failed, check for string literals
+        if (varType === "string" || varType === "std::string") {
+            if (!/^".*"$/.test(value)) {
+                throw new Error(`Type error: Cannot assign non-string value '${value}' to string`);
+            }
+        }
+    }
+}
+
+function parseDeclaration() {
+    const type = parseType();
+    const name = expect("IDENTIFIER").value;
+
+    // Function declaration
+    if (current().value === '(') {
+        const params = parseParameterList();
+
+        // Function definition
+        if (current().value === '{') {
+            const body = parseBlock();
+            return { type: "function", returnType: type, name, params, body };
+        }
+        // Function declaration only
+        else {
+            expect("DELIMITER", ";");
+            return { type: "functionDecl", returnType: type, name, params };
+        }
+    }
+    // Variable declaration
+    else {
+        let value = null;
+        if (current().value === '=') {
+            next();
+            value = parseExpression();
+
+            // Validate type compatibility
+            validateDeclaration(type, value);
+        }
+        expect("DELIMITER", ";");
+        return { type: "declaration", varType: type, name, value };
+    }
+}
+
 
     function parseBlock() {
         expect("DELIMITER", "{");
@@ -311,6 +411,8 @@ function parseTokens(tokens) {
                 case "static":
                 case "auto":
                 case "template":
+                case "string":
+                case "vector":
                     return parseDeclaration();
 
                 case "cin": {
@@ -325,45 +427,32 @@ function parseTokens(tokens) {
                     return { type: "input", inputs };
                 }
 
-                /*case "cout": {
-                    expect("KEYWORD", "cout");
-                    const parts = [];
-                    while (current() && current().value !== ';') {
-                        if (current().type === "STREAM" && current().value === "<<") {
-                            expect("STREAM", "<<");
-                            let expr = parseExpression();
-                            parts.push(expr);
-                        } else if (current().type === "KEYWORD" && current().value === "endl") {
-                            next();
-                            parts.push('"\\n"');
-                        } else {
-                            throw new Error(`Expected '<<' or 'endl' in cout, got '${current().value}'`);
-                        }
+                case "cout": {
+                expect("KEYWORD", "cout");
+                const parts = [];
+                while (current() && current().value !== ';') 
+                {
+                    if (current().type === "STREAM" && current().value === "<<") {
+                        expect("STREAM", "<<");
+                        let expr = parseExpression();
+                        parts.push(expr);
+                    } else if ((current().type === "KEYWORD" || current().type === "IDENTIFIER") && current().value === "endl") {
+                        next();
+                        parts.push('\n');  // Actual newline character
+                    } else if (current().type === "IDENTIFIER" && current().value === "std" &&
+                            peek() && peek().value === "::" &&
+                            tokens[i + 2] && tokens[i + 2].value === "endl") {
+                        next(); // std
+                        next(); // ::
+                        next(); // endl
+                        parts.push('\n');
+                    } else {
+                        throw new Error(`Expected '<<' or 'endl' in cout, got '${current().value}'`);
                     }
-                    expect("DELIMITER", ";");
-                    return { type: "print", parts };
-                }*/
-
-                    case "cout": {
-    expect("KEYWORD", "cout");
-    const parts = [];
-    while (current() && current().value !== ';') {
-        if (current().type === "STREAM" && current().value === "<<") {
-            expect("STREAM", "<<");
-            if (current().type === "KEYWORD" && current().value === "endl") {
-                next();
-                parts.push('"\\n"');
-            } else {
-                let expr = parseExpression();
-                parts.push(expr);
-            }
-        } else {
-            throw new Error(`Expected '<<' or 'endl' in cout, got '${current().value}'`);
-        }
-    }
-    expect("DELIMITER", ";");
-    return { type: "print", parts };
-}
+                }
+                expect("DELIMITER", ";");
+                return { type: "print", parts };
+                    }
 
                 case "if": {
                     expect("KEYWORD", "if");
@@ -460,11 +549,6 @@ function parseTokens(tokens) {
     }
 
       const ast = [];
-    /*while (i < tokens.length) {
-        ast.push(parseStatement());
-    }
-    return ast;
-}*/
  while (i < tokens.length) {
 try {
             const node = parseStatement();
@@ -479,188 +563,6 @@ try {
     
     return ast;  // Return the array of nodes
 }
-
-// --- Enhanced Code Generator ---
-/*function generateJS(ast, inputBuffer = [], isTopLevel = true) {
-    let code = '';
-    let includes = [];
-    
-    // First pass for includes and function declarations
-    for (const node of ast) {
-        if (node.type === "include") {
-            includes.push(node.value);
-            // Add polyfills for STL includes
-            if (node.value.includes('<vector>')) {
-                code += `class Vector {
-                    constructor() { this.data = []; this.size = 0; }
-                    push_back(val) { this.data.push(val); this.size++; }
-                    pop_back() { if (this.size > 0) { this.size--; return this.data.pop(); } }
-                    at(index) { if (index < 0 || index >= this.size) throw 'Out of bounds'; return this.data[index]; }
-                    size() { return this.size; }
-                    empty() { return this.size === 0; }
-                }\n`;
-            }
-            if (node.value.includes('<map>')) {
-                code += `class Map {
-                    constructor() { this.data = {}; }
-                    insert(pair) { this.data[pair.key] = pair.value; }
-                    find(key) { return this.data.hasOwnProperty(key) ? { second: this.data[key] } : { second: undefined }; }
-                    size() { return Object.keys(this.data).length; }
-                    empty() { return Object.keys(this.data).length === 0; }
-                }\n`;
-            }
-            if (node.value.includes('<algorithm>')) {
-                code += `const std = {
-                    sort: (arr) => arr.sort((a, b) => a - b),
-                    max: (a, b) => a > b ? a : b,
-                    min: (a, b) => a < b ? a : b
-                };\n`;
-            }
-        } else if (node.type === "functionDecl") {
-            code += `function ${node.name}(${node.params.map(p => p.name).join(', ')}) { throw "${node.name} not implemented"; }\n`;
-        }
-    }
-    
-    if (isTopLevel) {
-        code += "const __input = [...arguments[0]];\n";
-        code += "function __inputProvider() { if (__input.length === 0) throw 'No more input'; return __input.shift(); }\n";
-        code += "let __outputs = [];\n";
-        
-        // Check for main function
-        const hasMain = ast.some(node => node.type === "function" && node.name === "main");
-        if (!hasMain) {
-            code += "function main() {\n";
-        }
-    }
-    
-    // Second pass for actual code generation
-    for (const node of ast) {
-        switch (node.type) {
-            case "include":
-                // Handled in first pass
-                break;
-                
-            case "declaration":
-                if (node.varType.includes('vector')) {
-                    code += `let ${node.name} = new Vector();\n`;
-                } else if (node.varType.includes('map')) {
-                    code += `let ${node.name} = new Map();\n`;
-                } else {
-                    code += `let ${node.name}`;
-                    if (node.value !== null) {
-                        code += ` = ${node.value}`;
-                    }
-                    code += `;\n`;
-                }
-                break;
-                
-            case "function":
-                code += `function ${node.name}(${node.params.map(p => p.name).join(', ')}) {\n`;
-                code += generateJS(node.body, inputBuffer, false);
-                code += `}\n`;
-                break;
-                
-            case "input":
-                for (const v of node.inputs) {
-                    code += `${v} = Number(__inputProvider());\n`;
-                }
-                break;
-                
-            case "print":
-                code += `__outputs.push(${node.parts.join(" + ' ' + ")});\n`;
-                break;
-                
-            case "if":
-                code += `if (${node.condition}) {\n`;
-                code += generateJS([node.thenStmt], inputBuffer, false);
-                code += `}\n`;
-                if (node.elseStmt) {
-                    code += `else {\n`;
-                    code += generateJS([node.elseStmt], inputBuffer, false);
-                    code += `}\n`;
-                }
-                break;
-                
-            case "while":
-                code += `while (${node.condition}) {\n`;
-                code += generateJS([node.body], inputBuffer, false);
-                code += `}\n`;
-                break;
-                
-            case "doWhile":
-                code += `do {\n`;
-                code += generateJS([node.body], inputBuffer, false);
-                code += `} while (${node.condition});\n`;
-                break;
-                
-            case "for":
-                code += `{\n`;
-                if (node.init) {
-                    code += generateJS([node.init], inputBuffer, false);
-                }
-                code += `while (${node.condition}) {\n`;
-                code += generateJS([node.body], inputBuffer, false);
-                if (node.update) {
-                    code += `${node.update};\n`;
-                }
-                code += `}\n}\n`;
-                break;
-                
-            case "return":
-                if (node.value !== null) {
-                    code += `return ${node.value};\n`;
-                } else {
-                    code += `return;\n`;
-                }
-                break;
-                
-            case "break":
-                code += `break;\n`;
-                break;
-                
-            case "continue":
-                code += `continue;\n`;
-                break;
-                
-            case "block":
-                code += `{\n`;
-                for (const stmt of node.body) {
-                    code += generateJS([stmt], inputBuffer, false);
-                }
-                code += `}\n`;
-                break;
-                
-            case "expression":
-                code += `${node.expression};\n`;
-                break;
-        }
-    }
-    
-    if (isTopLevel) {
-        const hasMain = ast.some(node => node.type === "function" && node.name === "main");
-        if (!hasMain) {
-            code += "}\n";
-            code += "main();\n";
-        } else {
-            code += "main();\n";
-        }
-        code += "return __outputs.join('');\n";
-    }
-    
-    return code;
-}
-
-// --- Run the JS ---
-function runJS(jsCode, inputs) {
-    try {
-        const runner = new Function(jsCode);
-        return runner(inputs);
-    } catch (e) {
-        return "Runtime error: " + e.message;
-    }
-}*/
-
-
 function generateJS(ast, inputBuffer = [], isTopLevel = true) {
     if (!Array.isArray(ast)) {
         if (ast && typeof ast === 'object') {
@@ -729,16 +631,16 @@ function generateJS(ast, inputBuffer = [], isTopLevel = true) {
                 break;
                 
             case "declaration":
-                if (node.varType.includes('vector')) {
+                if (/^vector<.*>$/.test(node.varType) || node.varType === 'vector') {
                     code += `let ${node.name} = new Vector();\n`;
-                } else if (node.varType.includes('map')) {
+                } else if (/^map<.*>$/.test(node.varType) || node.varType === 'map') {
                     code += `let ${node.name} = new Map();\n`;
                 } else {
-                    code += `let ${node.name}`;
-                    if (node.value !== null) {
-                        code += ` = ${node.value}`;
+                    let init = node.value !== null ? ` = ${node.value}` : '';
+                    if ((node.varType === 'string' || node.varType === 'std::string') && node.value === null) {
+                        init = ` = ""`;
                     }
-                    code += `;\n`;
+                    code += `let ${node.name}${init};\n`;
                 }
                 break;
                 
@@ -755,14 +657,14 @@ function generateJS(ast, inputBuffer = [], isTopLevel = true) {
                 break;
                 
             case "print":
-                // Modified output handling - ensure proper string concatenation
-                if (node.parts.length === 0) {
-                    code += `__outputs.push("");\n`;
-                } else {
-                    code += `__outputs.push(String(${node.parts.join(" + ")}));\n`;
-                }
-                break;
-                
+    if (node.parts.length === 0) {
+        code += `__outputs.push("");\n`;
+    } else {
+        // Join parts using + but wrap each part with String()
+        code += `__outputs.push(${node.parts.map(p => `String(${p})`).join(' + ')});\n`;
+    }
+    break;
+
             case "if":
                 code += `if (${node.condition}) {\n`;
                 code += generateJS([node.thenStmt], inputBuffer, false);
@@ -859,25 +761,6 @@ function runJS(jsCode, inputs) {
         return "Runtime error: " + e.message;
     }
 }
-
-// --- Main Driver ---
-/*function compileAndRun() {
-    const code = document.getElementById("code").value;
-    const userInput = document.getElementById("userInput").value;
-    const inputs = userInput.trim().split(/\s+/).filter(v => v.length > 0);
-
-    try {
-        const tokens = tokenize(code);
-        const ast = parseTokens(tokens);
-        const jsCode = generateJS(ast, inputs);
-        console.log("Generated JS:", jsCode); // For debugging
-        const output = runJS(jsCode, inputs);
-        document.getElementById("output").textContent = output;
-    } catch (e) {
-        document.getElementById("output").textContent = "Error: " + e.message;
-    }
-}*/
-
 window.compileAndRun = function() {
     try {
         const code = document.getElementById("code").value;
