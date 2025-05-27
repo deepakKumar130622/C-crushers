@@ -1,26 +1,23 @@
 // --- Enhanced Tokenizer ---
 function tokenize(input) {
     const tokenSpecs = [
-    [/^\/\/.*/, null],                     // Single-line comments
-    [/^\/\*[\s\S]*?\*\//, null],           // Multi-line comments
-    [/^#include\s*<[^>]+>/, 'INCLUDE'],    // Include directives
-    [/^#include\s*"[^"]+"/, 'INCLUDE'],    // Local includes
-    [/^\b(int|float|double|char|void|bool|if|else|while|for|do|return|break|continue|cout|cin|endl|class|struct|public|private|protected|new|delete|true|false|auto|const|static|namespace|using|template|typename|vector|map|string|pair)\b/, 'KEYWORD'],
-    [/^[a-zA-Z_]\w*/, 'IDENTIFIER'],
-    [/^\d+\.?\d*([eE][+-]?\d+)?/, 'NUMBER'],
-    [/^'([^'\\]|\\.)'/, 'CHAR'],
-    [/^"([^"\\]|\\.)*"/, 'STRING'],
-    [/^<<|^>>/, 'STREAM'],
-    [/^\+\+|^--/, 'OPERATOR'],
-    [/^==|^!=|^<=|^>=|^&&|^\|\||^->|^\./, 'OPERATOR'],
-    [/^::/, 'SCOPE'],
-    [/^</, 'DELIMITER'],                  // Correct order: comes before generic OPERATOR
-    [/^>/, 'DELIMITER'],
-    [/^[+\-*/=!%&|~^]/, 'OPERATOR'],      // Comes after
-    [/^[\[\](){};,:]/, 'DELIMITER'],
-    [/^\s+/, null]
-];
-
+        [/^\/\/.*/, null],                     // Single-line comments
+        [/^\/\*[\s\S]*?\*\//, null],          // Multi-line comments
+        [/^#include\s*<[^>]+>/, 'INCLUDE'],   // Include directives
+        [/^#include\s*"[^"]+"/, 'INCLUDE'],   // Local includes
+        [/^\b(int|float|double|char|void|bool|if|else|while|for|do|return|break|continue|cout|cin|endl|class|struct|public|private|protected|new|delete|true|false|auto|const|static|namespace|using|template|typename|vector|map|string|pair)\b/, 'KEYWORD'],
+        [/^[a-zA-Z_]\w*/, 'IDENTIFIER'],
+        [/^\d+\.?\d*([eE][+-]?\d+)?/, 'NUMBER'],
+        [/^'([^'\\]|\\.)'/, 'CHAR'],
+        [/^"([^"\\]|\\.)*"/, 'STRING'],
+        [/^<<|^>>/, 'STREAM'],
+        [/^\+\+|^--/, 'OPERATOR'],
+        [/^==|^!=|^<=|^>=|^&&|^\|\||^->|^\./, 'OPERATOR'],
+        [/^[+\-*/=<>!%&|~^]/, 'OPERATOR'],
+        [/^::/, 'SCOPE'],
+        [/^[\[\](){};,:]/, 'DELIMITER'],
+        [/^\s+/, null]
+    ];
 
     let tokens = [];
     let position = 0;
@@ -107,162 +104,164 @@ function parseTokens(tokens) {
 }
 
 
-function parseExpression(minPrecedence = 1) {
-    function parsePrimary() {
-        const token = current();
-        if (!token) throw new Error("Unexpected end of input in expression");
+    function parseExpression(minPrecedence = 0) {
+        let left = parsePrimary();
 
-        // Handle prefix unary operators
-        if (token.type === "OPERATOR" && (token.value === "++" || token.value === "--" ||
-            token.value === "+" || token.value === "-" || token.value === "!" || token.value === "~")) {
-            const op = token.value;
+        while (
+            current() &&
+            (current().type === 'OPERATOR' || current().type === 'SCOPE') &&
+            PRECEDENCE[current().value] >= minPrecedence
+        ) {
+            const op = current().value;
+            const precedence = PRECEDENCE[op];
             next();
-            const operand = parsePrimary();
-            return `(${op}${operand})`;
+            let right = parseExpression(precedence + 1);
+            left = `(${left} ${op} ${right})`;
         }
 
-        if (token.type === 'NUMBER' || token.type === 'IDENTIFIER' || 
-            token.type === 'STRING' || token.type === 'CHAR' ||
-            (token.type === 'KEYWORD' && (token.value === 'true' || token.value === 'false' || token.value === 'endl'))) {
-            let result = token.value;
-            next();
+        return left;
+    }
 
-            // Postfix: ++ or --
-            if (current() && current().type === "OPERATOR" && (current().value === "++" || current().value === "--")) {
+    function parsePrimary() {
+    const token = current();
+    if (!token) throw new Error("Unexpected end of input in expression");
+
+    // Handle prefix unary operators
+    if (token.type === "OPERATOR" && ["++", "--", "+", "-", "!", "~"].includes(token.value)) {
+        const op = token.value;
+        next();
+        const operand = parsePrimary();
+        return `(${op}${operand})`;
+    }
+
+    // Handle literals and identifiers
+    if (
+        token.type === 'NUMBER' || token.type === 'IDENTIFIER' ||
+        token.type === 'STRING' || token.type === 'CHAR' ||
+        (token.type === 'KEYWORD' && ['true', 'false', 'endl', 'cout', 'cin'].includes(token.value))
+    ) {
+        const value = token.value;
+        next();
+
+        // Handle postfix ++ / --
+        if (current() && current().type === "OPERATOR" && ["++", "--"].includes(current().value)) {
+            const op = current().value;
+            next();
+            return `(${value}${op})`;
+        }
+
+        // ✅ Handle chaining (calls, member access, indexing)
+        let result = value;
+
+        while (current()) {
+            if (current().value === '(') {
+                next();
+                const args = [];
+                while (current() && current().value !== ')') {
+                    args.push(parseExpression());
+                    if (current().value === ',') next();
+                }
+                expect("DELIMITER", ")");
+                result = `${result}(${args.join(', ')})`;
+            } else if (current().value === '.' || current().value === '->') {
                 const op = current().value;
                 next();
-                return `(${result}${op})`;
-            }
-
-            // Loop to handle chaining
-            while (current()) {
-                if (current().value === '(') {
-                    next();
-                    const args = [];
-                    while (current() && current().value !== ')') {
-                        args.push(parseExpression());
-                        if (current().value === ',') next();
-                    }
-                    expect("DELIMITER", ")");
-                    result = `${result}(${args.join(', ')})`;
-                } else if (current().value === '.' || current().value === '->') {
-                    const op = current().value;
-                    next();
-                    const member = expect("IDENTIFIER").value;
-                    result = `${result}${op}${member}`;
-                } else if (current().value === '[') {
-                    next();
-                    const index = parseExpression();
-                    expect("DELIMITER", "]");
-                    result = `${result}[${index}]`;
-                } else {
-                    break;
-                }
-            }
-
-            return result;
-        }
-
-        if (token.value === '(') {
-            next();
-            const expr = parseExpression();
-            expect("DELIMITER", ")");
-            return `(${expr})`;
-        }
-
-        if (token.value === '[') {
-            next();
-            const expr = parseExpression();
-            expect("DELIMITER", "]");
-            return `[${expr}]`;
-        }
-
-        if (token.type === 'KEYWORD' && token.value === 'new') {
-            next();
-            const type = expect("IDENTIFIER").value;
-            if (current().value === '[') {
+                const member = expect("IDENTIFIER").value;
+                result = `${result}${op}${member}`;
+            } else if (current().value === '[') {
                 next();
-                const size = parseExpression();
+                const index = parseExpression();
                 expect("DELIMITER", "]");
-                return `new ${type}[${size}]`;
+                result = `${result}[${index}]`;
             } else {
-                return `new ${type}()`;
+                break;
             }
         }
 
-        throw new Error(`Unexpected token in expression: ${token.value}`);
+        return result;
     }
 
-    let left = parsePrimary();
-
-    while (
-        current() &&
-        (current().type === 'OPERATOR' || current().type === 'SCOPE') &&
-        PRECEDENCE[current().value] >= minPrecedence
-    ) {
-        const op = current().value;
-        const precedence = PRECEDENCE[op];
+    // Handle grouped expressions: ( ... )
+    if (token.value === '(') {
         next();
-        const right = parseExpression(op === '=' ? precedence : precedence + 1);
-        left = `(${left} ${op} ${right})`;
+        const expr = parseExpression();
+        expect("DELIMITER", ")");
+        return `(${expr})`;
     }
 
-    return left;
+    // Handle array literals or bracketed expressions: [ ... ]
+    if (token.value === '[') {
+        next();
+        const expr = parseExpression();
+        expect("DELIMITER", "]");
+        return `[${expr}]`;
+    }
+
+    // Handle new Type() or new Type[]
+    if (token.type === 'KEYWORD' && token.value === 'new') {
+        next();
+        const type = expect("IDENTIFIER").value;
+
+        if (current().value === '[') {
+            next();
+            const size = parseExpression();
+            expect("DELIMITER", "]");
+            return `new ${type}[${size}]`;
+        } else {
+            return `new ${type}()`;
+        }
+    }
+
+    throw new Error(`Unexpected token in expression: ${token.value}`);
 }
 
 
-
     function parseType() {
-        let type = '';
-        // Handle const, static modifiers
-        while (current().type === 'KEYWORD' && (current().value === 'const' || current().value === 'static')) {
-            type += current().value + ' ';
-            next();
-        }
-        
-        // Template types
-       // Parse templated types like vector<int>, map<string, int>
-            if (current().value === 'vector' || current().value === 'map' || current().value === 'pair') {
-                let baseType = expect("KEYWORD").value;
-                if (current() && current().value === "<") {
-                    next(); // consume '<'
-                    let templateArgs = [];
-                    while (current() && current().value !== ">") {
-                        templateArgs.push(parseType());
-                        if (current().value === ",") next();
-                    }
-                    expect("DELIMITER", ">");
-                    type += `${baseType}<${templateArgs.join(", ")}>`;
-                } else {
-                    type += baseType;
-                }
-                return type;
+    let type = '';
+
+    // Handle const/static modifiers
+    while (current().type === 'KEYWORD' && ['const', 'static'].includes(current().value)) {
+        type += current().value + ' ';
+        next();
+    }
+
+    // Parse base type or templated types
+    if (current().type === 'KEYWORD' || current().type === 'IDENTIFIER') {
+        const base = expect(current().type).value;
+        type += base;
+
+        // ✅ Handle templates: vector<int>, map<string, int>
+        if (current().value === "<") {
+            type += "<";
+            next(); // consume '<'
+
+            let depth = 1;
+            while (depth > 0 && current()) {
+                type += current().value;
+                if (current().value === "<") depth++;
+                else if (current().value === ">") depth--;
+                next();
             }
 
-        
-        // Base type
-        if (current().type === 'KEYWORD') {
-            type += expect("KEYWORD").value;
-            } else {
-                const id = expect("IDENTIFIER").value;
-                if (id === "std" && current() && current().value === "::") {
-                    next(); // skip '::'
-                    const sub = expect("IDENTIFIER").value;
-                    type += `std::${sub}`;
-                } else {
-                    type += id;
-                }
-                }
+            if (depth !== 0) {
+                throw new Error("Unbalanced angle brackets in template type");
+            }
 
-        
-        // Pointer/reference
-        while (current().value === '*' || current().value === '&') {
-            type += current().value;
-            next();
+            type += ">";
         }
-        
-        return type;
+    } else {
+        throw new Error(`Expected type, got '${current() ? current().value : 'EOF'}'`);
     }
+
+    // Handle pointer/reference
+    while (current() && (current().value === '*' || current().value === '&')) {
+        type += current().value;
+        next();
+    }
+
+    return type;
+}
+
 
     function parseParameterList() {
         const params = [];
@@ -386,184 +385,225 @@ function parseDeclaration() {
         expect("DELIMITER", "}");
         return { type: "block", body };
     }
+function parseStatement() {
+    const t = current();
+    if (!t) throw new Error("Unexpected EOF");
 
-    function parseStatement() {
-        const t = current();
-        if (!t) throw new Error("Unexpected EOF");
+    if (t.value === "{") {
+        return parseBlock();
+    }
 
-        if (t.value === "{") {
-            return parseBlock();
-        }
+    if (t.type === "INCLUDE") {
+        const include = expect("INCLUDE").value;
+        return { type: "include", value: include };
+    }
 
-        if (t.type === "INCLUDE") {
-            const include = expect("INCLUDE").value;
-            return { type: "include", value: include };
-        }
+    if (t.type === "KEYWORD") {
+        switch (t.value) {
+            case "int":
+            case "float":
+            case "double":
+            case "char":
+            case "bool":
+            case "void":
+            case "const":
+            case "static":
+            case "auto":
+            case "template":
+            case "string":
+            case "vector":
+            case "map":
+                return parseDeclaration();
 
-        if (t.type === "KEYWORD") {
-            switch (t.value) {
-                case "int":
-                case "float":
-                case "double":
-                case "char":
-                case "bool":
-                case "void":
-                case "const":
-                case "static":
-                case "auto":
-                case "template":
-                case "string":
-                case "vector":
-                    return parseDeclaration();
-
-                case "cin": {
-                    expect("KEYWORD", "cin");
-                    const inputs = [];
-                    while (current() && current().type === "STREAM" && current().value === ">>") {
-                        expect("STREAM", ">>");
-                        const v = parseExpression();
-                        inputs.push(v);
-                    }
-                    expect("DELIMITER", ";");
-                    return { type: "input", inputs };
-                }
-
-                case "cout": {
-                expect("KEYWORD", "cout");
-                const parts = [];
-                while (current() && current().value !== ';') 
-                {
-                    if (current().type === "STREAM" && current().value === "<<") {
-                        expect("STREAM", "<<");
-                        let expr = parseExpression();
-                        parts.push(expr);
-                    } else if ((current().type === "KEYWORD" || current().type === "IDENTIFIER") && current().value === "endl") {
-                        next();
-                        parts.push('\n');  // Actual newline character
-                    } else if (current().type === "IDENTIFIER" && current().value === "std" &&
-                            peek() && peek().value === "::" &&
-                            tokens[i + 2] && tokens[i + 2].value === "endl") {
-                        next(); // std
-                        next(); // ::
-                        next(); // endl
-                        parts.push('\n');
-                    } else {
-                        throw new Error(`Expected '<<' or 'endl' in cout, got '${current().value}'`);
-                    }
+            case "cin": {
+                expect("KEYWORD", "cin");
+                const inputs = [];
+                while (current() && current().type === "STREAM" && current().value === ">>") {
+                    expect("STREAM", ">>");
+                    const v = parseExpression();
+                    inputs.push(v);
                 }
                 expect("DELIMITER", ";");
-                return { type: "print", parts };
+                return { type: "input", inputs };
+            }
+
+            case "cout": {
+                    expect("KEYWORD", "cout");
+                    const parts = [];
+
+                    if (!(current() && current().type === "STREAM" && current().value === "<<")) {
+                        throw new Error(`Expected '<<' after 'cout', got '${current() ? current().value : 'EOF'}'`);
                     }
 
-                case "if": {
-                    expect("KEYWORD", "if");
-                    expect("DELIMITER", "(");
-                    const condition = parseExpression();
-                    expect("DELIMITER", ")");
-                    const thenStmt = parseStatement();
-                    let elseStmt = null;
-                    if (current() && current().type === "KEYWORD" && current().value === "else") {
-                        expect("KEYWORD", "else");
-                        elseStmt = parseStatement();
+                    while (current() && current().value !== ';') {
+                        if (current().type === "STREAM" && current().value === "<<") {
+                            expect("STREAM", "<<");
+                            const expr = parseExpression();
+                            parts.push(expr);
+                        } else if (
+                            (current().type === "KEYWORD" || current().type === "IDENTIFIER") &&
+                            current().value === "endl"
+                        ) {
+                            next();
+                            parts.push('\n');
+                        } else if (
+                            current().type === "IDENTIFIER" && current().value === "std" &&
+                            peek() && peek().value === "::" &&
+                            tokens[i + 2] && tokens[i + 2].value === "endl"
+                        ) {
+                            next(); next(); next();
+                            parts.push('\n');
+                        } else {
+                            throw new Error(`Expected '<<' or 'endl' in cout, got '${current().value}'`);
+                        }
                     }
-                    return { type: "if", condition, thenStmt, elseStmt };
-                }
 
-                case "while": {
-                    expect("KEYWORD", "while");
-                    expect("DELIMITER", "(");
-                    const condition = parseExpression();
-                    expect("DELIMITER", ")");
-                    const body = parseStatement();
-                    return { type: "while", condition, body };
-                }
-
-                case "do": {
-                    expect("KEYWORD", "do");
-                    const body = parseStatement();
-                    expect("KEYWORD", "while");
-                    expect("DELIMITER", "(");
-                    const condition = parseExpression();
-                    expect("DELIMITER", ")");
                     expect("DELIMITER", ";");
-                    return { type: "doWhile", condition, body };
+                    return { type: "print", parts };
                 }
 
-                case "for": {
-                    expect("KEYWORD", "for");
-                    expect("DELIMITER", "(");
-                    let init = null;
-                    if (current().value !== ";") {
-                        init = parseStatement();
+
+            case "if": {
+                expect("KEYWORD", "if");
+                expect("DELIMITER", "(");
+                const condition = parseExpression();
+                expect("DELIMITER", ")");
+                const thenStmt = parseStatement();
+                let elseStmt = null;
+                if (current() && current().type === "KEYWORD" && current().value === "else") {
+                    expect("KEYWORD", "else");
+                    elseStmt = parseStatement();
+                }
+                return { type: "if", condition, thenStmt, elseStmt };
+            }
+
+            case "while": {
+                expect("KEYWORD", "while");
+                expect("DELIMITER", "(");
+                const condition = parseExpression();
+                expect("DELIMITER", ")");
+                const body = parseStatement();
+                return { type: "while", condition, body };
+            }
+
+            case "do": {
+                expect("KEYWORD", "do");
+                const body = parseStatement();
+                expect("KEYWORD", "while");
+                expect("DELIMITER", "(");
+                const condition = parseExpression();
+                expect("DELIMITER", ")");
+                expect("DELIMITER", ";");
+                return { type: "doWhile", condition, body };
+            }
+
+            case "for": {
+                expect("KEYWORD", "for");
+                expect("DELIMITER", "(");
+
+                let init = null;
+                if (current().value !== ";") {
+                    if (current().type === "KEYWORD" && [
+                        "int", "float", "double", "char", "bool", "string", "const", "static", "auto", "vector", "map"
+                    ].includes(current().value)) {
+                        init = parseDeclaration(); // e.g. int i = 0;
                     } else {
-                        next(); // skip empty init
+                        const expr = parseExpression(); // e.g. i = 0;
+                        expect("DELIMITER", ";");
+                        init = { type: "expression", expression: expr };
                     }
-                    let condition = "true";
-                    if (current().value !== ";") {
-                        condition = parseExpression();
-                    }
+                } else {
                     expect("DELIMITER", ";");
-                    let update = null;
-                    if (current().value !== ")") {
-                        update = parseExpression();
-                    }
-                    expect("DELIMITER", ")");
-                    const body = parseStatement();
-                    return { type: "for", init, condition, update, body };
                 }
 
-                case "return": {
-                    expect("KEYWORD", "return");
-                    let value = null;
-                    if (current().value !== ";") {
-                        value = parseExpression();
-                    }
-                    expect("DELIMITER", ";");
-                    return { type: "return", value };
+                let condition = "true";
+                if (current().value !== ";") {
+                    condition = parseExpression();
                 }
+                expect("DELIMITER", ";");
 
-                case "break": {
-                    expect("KEYWORD", "break");
-                    expect("DELIMITER", ";");
-                    return { type: "break" };
+                let update = null;
+                if (current().value !== ")") {
+                    update = parseExpression();
                 }
+                expect("DELIMITER", ")");
 
-                case "continue": {
-                    expect("KEYWORD", "continue");
-                    expect("DELIMITER", ";");
-                    return { type: "continue" };
-                }
-
-                default:
-                    throw new Error(`Unsupported keyword: ${t.value}`);
+                const body = parseStatement();
+                return { type: "for", init, condition, update, body };
             }
-        }
 
-        // Try to parse as expression statement
-        try {
-            const expr = parseExpression();
-            expect("DELIMITER", ";");
-            return { type: "expression", expression: expr };
-        } catch (e) {
-            throw new Error(`Invalid statement: ${t.value}`);
+            case "return": {
+                expect("KEYWORD", "return");
+                let value = null;
+                if (current().value !== ";") {
+                    value = parseExpression();
+                }
+                expect("DELIMITER", ";");
+                return { type: "return", value };
+            }
+
+            case "break": {
+                expect("KEYWORD", "break");
+                expect("DELIMITER", ";");
+                return { type: "break" };
+            }
+
+            case "continue": {
+                expect("KEYWORD", "continue");
+                expect("DELIMITER", ";");
+                return { type: "continue" };
+            }
+
+            default:
+                throw new Error(`Unsupported keyword: ${t.value}`);
         }
     }
 
-      const ast = [];
- while (i < tokens.length) {
-try {
-            const node = parseStatement();
-            if (node) {
-                ast.push(node);
-            }
-        } catch (e) {
-            console.error("Parsing error:", e);
-            throw e;
-        }
-    }
-    
-    return ast;  // Return the array of nodes
+    // ✅ Enhanced fallback for assignments and expressions
+
+    // Prevent expression fallback for cout and cin
+                if (t.type === 'KEYWORD' && ['cout', 'cin'].includes(t.value)) {
+                    throw new Error(`Unexpected keyword '${t.value}' — expected proper handler`);
+                }
+
+                // Handle standalone assignments and expressions like: a = 9;
+                if (t.type === 'IDENTIFIER') {
+                    try {
+                        const expr = parseExpression(); // will handle 'a = 9'
+                        expect("DELIMITER", ";");
+                        return { type: "expression", expression: expr };
+                    } catch (e) {
+                        throw new Error(`Invalid expression starting with '${t.value}': ${e.message}`);
+                    }
+                }
+
+                // Final fallback: try any expression
+                try {
+                    const expr = parseExpression();
+                    expect("DELIMITER", ";");
+                    return { type: "expression", expression: expr };
+                } catch (e) {
+                    throw new Error(`Invalid statement: ${t.value}`);
+                }
 }
+
+const ast = [];
+
+while (i < tokens.length) {
+    try {
+        const node = parseStatement();
+        if (node) {
+            ast.push(node);
+        }
+    } catch (e) {
+        console.error("Parsing error:", e.message);
+        throw e;
+    }
+}
+
+return ast;
+}
+
 function generateJS(ast, inputBuffer = [], isTopLevel = true) {
     if (!Array.isArray(ast)) {
         if (ast && typeof ast === 'object') {
@@ -580,7 +620,7 @@ function generateJS(ast, inputBuffer = [], isTopLevel = true) {
         if (node.type === "include") {
             includes.push(node.value);
             // Add polyfills for STL includes
-            if (node.value.includes('<vector>')) {
+                        if (node.value.includes('<vector>')) {
                 code += `class Vector {
                     constructor() { this.data = []; this.size = 0; }
                     push_back(val) { this.data.push(val); this.size++; }
@@ -588,8 +628,26 @@ function generateJS(ast, inputBuffer = [], isTopLevel = true) {
                     at(index) { if (index < 0 || index >= this.size) throw 'Out of bounds'; return this.data[index]; }
                     size() { return this.size; }
                     empty() { return this.size === 0; }
+                    clear() { this.data = []; this.size = 0; }
+                    front() { if (this.size === 0) throw 'Empty vector'; return this.data[0]; }
+                    back() { if (this.size === 0) throw 'Empty vector'; return this.data[this.size - 1]; }
+                    resize(n, val = 0) {
+                        if (n < this.size) {
+                            this.data.length = n;
+                        } else {
+                            while (this.size < n) {
+                                this.data.push(val);
+                            }
+                        }
+                        this.size = n;
+                    }
+                    assign(n, val) {
+                        this.data = new Array(n).fill(val);
+                        this.size = n;
+                    }
                 }\n`;
             }
+
 
             if (node.value.includes('<map>')) {
                 code += `class Map {
@@ -632,17 +690,21 @@ function generateJS(ast, inputBuffer = [], isTopLevel = true) {
                 break;
                 
             case "declaration":
-                if (/^vector<.*>$/.test(node.varType) || node.varType === 'vector') {
+                if (node.varType.includes('vector')) {
                     code += `let ${node.name} = new Vector();\n`;
-                } else if (/^map<.*>$/.test(node.varType) || node.varType === 'map') {
+                } else if (node.varType.includes('map')) {
                     code += `let ${node.name} = new Map();\n`;
-                } else {
-                    let init = node.value !== null ? ` = ${node.value}` : '';
-                    if ((node.varType === 'string' || node.varType === 'std::string') && node.value === null) {
-                        init = ` = ""`;
-                    }
-                    code += `let ${node.name}${init};\n`;
-                }
+                }else {
+                            let init = node.value !== null ? ` = ${node.value}` : '';
+                            
+                            // Initialize strings to empty if not explicitly set
+                            if ((node.varType === 'string' || node.varType === 'std::string') && node.value === null) {
+                                init = ` = ""`;
+                            }
+
+                            code += `let ${node.name}${init};\n`;
+                        }
+
                 break;
                 
             case "function":
@@ -658,20 +720,14 @@ function generateJS(ast, inputBuffer = [], isTopLevel = true) {
                 break;
                 
             case "print":
-                    if (node.parts.length === 0) {
-                        code += `__outputs.push("");\n`;
-                    } else {
-                        // Replace 'endl' with newline string, wrap others with String()
-                        const parts = node.parts.map(p => {
-                            if (p === "endl") return `"\\n"`;         // C++-style endl
-                            if (p === '\n') return `"\\n"`;            // internal mapping
-                            return `String(${p})`;
-                        });
-                        code += `__outputs.push(${parts.join(' + ')});\n`;
-                    }
-                    break;
-
-
+            if (node.parts.length === 0) {
+                code += `__outputs.push("");\n`;
+            } else {
+                code += `__outputs.push(${node.parts.map(p =>
+                    p === '\n' || p === 'endl' ? `"\\n"` : `String(${p})`
+                ).join(' + ')});\n`;
+            }
+            break;
             case "if":
                 code += `if (${node.condition}) {\n`;
                 code += generateJS([node.thenStmt], inputBuffer, false);
